@@ -1,0 +1,278 @@
+function [Count] = Dict_Rec(params,data,ch)
+%% Function to implement Sparse KSVD
+% Used in Denoising & Dictionary Recovery
+% A is the sparse representation of the base dictionary D = B*A
+% D_ = Dummy Dictionary
+% D = Original Dictionary ; Ground Truth
+
+%% Parameter Extraction
+Tdict = params.Tdict;
+D_base = params.D_base;
+Dict = params.Dict;             % Ground Truth
+alpha = params.alpha;   a1 = alpha(1); a2 = alpha(2); a3 = alpha(3);
+iternum = params.iternum;
+Count = zeros(1,iternum);
+
+%% Dictionary Setup and Normalization
+dictsize = size(Dict,2);
+A = randn(size(D_base,2),dictsize);                 % Original Aini = Identity/random
+for i = 1:dictsize
+    A(:,i) = A(:,i)/norm(D_base*A(:,i));
+end
+D = D_base*A;   D = normc(D);
+warning('off','MATLAB:nearlySingularMatrix');
+%% Dictionary Learning stuff begins
+for iter = 1:iternum
+    G = D'*D;
+    % Coding Mode
+    if (isfield(params,'Tdata'))
+        W = omp(D,data,G,params.Tdata);
+    elseif (isfield(params,'Edata'))
+        W = omp2(D,data,G,params.Edata);  % Sparse Coding Error Constraint
+    end    
+    p = randperm(dictsize); % randomize atom sparsify order
+    
+    replaced_atoms = zeros(1,dictsize);  % mark each atom replaced by optimize_atom  
+    unused_sigs = 1:size(data,2);   % tracks the signals that were used to replace "dead" atoms.
+                                    % makes sure the same signal is not selected twice
+    for j = 1:dictsize
+        switch lower(ch)
+            case 'ksvds'
+                [A(:,p(j)),W_j,data_indices,replaced_atoms,unused_sigs] = Optimize_KSVDs(data,D_base,A,p(j),W,Tdict,replaced_atoms,unused_sigs);
+                W(p(j),data_indices) = W_j;
+            case 'algo-1'
+                [A(:,p(j)),W_j,data_indices,replaced_atoms,unused_sigs] = Optimize_A1(data,D_base,A,p(j),W,a1,replaced_atoms,unused_sigs);
+                W(p(j),data_indices) = W_j;
+            case 'algo-2'
+                C_D = chol(D_base'*D_base);
+                [A(:,p(j)),W_j,data_indices,replaced_atoms,unused_sigs] = Optimize_A2(data,D_base,A,p(j),W,C_D,replaced_atoms,unused_sigs);
+                W(p(j),data_indices) = W_j;
+            case 'algo-3'
+                [A(:,p(j)),W_j,replaced_atoms,unused_sigs] = Optimize_A3(data,D_base,A,p(j),W,a2,replaced_atoms,unused_sigs);
+                W(p(j),:)= W_j;
+            case 'algo-4'
+                [A(:,p(j)),W_j,replaced_atoms,unused_sigs] = Optimize_A4(data,D_base,A,p(j),W,a2,a3,replaced_atoms,unused_sigs);
+                W(p(j),:)= W_j;
+            otherwise
+                error('Invalid Learning Method Specified');
+        end
+        
+    end    
+        D = D_base*A;   D = normc(D);
+    
+%     fprintf('Error Norm is ê : %0.4f\n',norm(data-D*W));
+    Count(1,iter) = NumAtomRec(D,Dict);               % To find # of atoms recovered
+    disp([ch,' Iteration # ',num2str(iter),' Atoms recovered = ',num2str(Count(1,iter))])
+end
+end
+
+function [a,W_j,ind,replaced_atoms,unused_sigs] = Optimize_KSVDs(data,D_base,A,j,W,Tdict,replaced_atoms,unused_sigs)
+%     [g,ind] = sprow(W,j);
+    ind = find(W(j,:)); g = W(j,ind);
+    if length(ind) < 1
+        maxsignals = 1000;
+        perm = randperm(length(unused_sigs));  perm = perm(1:min(maxsignals,end)); 
+        E = sum((data(:,unused_sigs(perm)) - D_base*A*W(:,unused_sigs(perm))).^2);
+        [~,ind] = max(E);     X_I = data(:,unused_sigs(perm(ind)));
+        a = omp(D_base,X_I,D_base'*D_base,Tdict);
+        a = a/norm(D_base*a);       A(:,j) = a;
+        W_j = 0;
+        unused_sigs = unused_sigs([1:perm(ind)-1,perm(ind)+1:end]);
+        replaced_atoms(j) = 1;
+        return;
+    end
+    A(:,j) = 0;
+    g = g';                 g = g/norm(g);
+    X_I = data(:,ind);      W_I = W(:,ind);
+    z = X_I*g - D_base*A*W_I*g;
+    a = omp(D_base,z,D_base'*D_base,Tdict);     % Sparse atom coding
+    a = a/norm(D_base*a);
+    A(:,j) = a;
+    W_j = (X_I'*D_base*a - (D_base*A*W_I)'*D_base*a)';
+end
+
+function [a,W_j,ind,replaced_atoms,unused_sigs] = Optimize_A1(data,D_base,A,j,W,alpha,replaced_atoms,unused_sigs)
+    ind = find(W(j,:));         
+    if length(ind) < 1
+        maxsignals = 1000;
+        perm = randperm(length(unused_sigs));  perm = perm(1:min(maxsignals,end)); 
+        E = sum((data(:,unused_sigs(perm)) - D_base*A*W(:,unused_sigs(perm))).^2);
+        [~,ind] = max(E);     X_I = data(:,unused_sigs(perm(ind)));
+        a = omp(D_base,X_I,D_base'*D_base,5);
+        a = a/norm(D_base*a);       A(:,j) = a;
+        W_j = 0;
+        unused_sigs = unused_sigs([1:perm(ind)-1,perm(ind)+1:end]);
+        replaced_atoms(j) = 1;
+        return;
+    end
+    A(:,j) = 0;
+    X_I = data(:,ind);      W_I = W(:,ind);
+    E_k_R = X_I - D_base*A*W_I;
+    [u,s,v] = svds(E_k_R'*D_base,1);
+    a = s*v;    x = u';
+    a = sign(D_base'*E_k_R*x').*(abs(D_base'*E_k_R*x')>alpha/2).*(abs(D_base'*E_k_R*x')-alpha/2);
+    a = a/norm(D_base*a);
+    if nnz(isnan(a))>0
+        a'
+    end
+%     A(:,j) = a;
+    W_j = a'*D_base'*E_k_R;
+end
+
+function [a,W_j,ind,replaced_atoms,unused_sigs] = Optimize_A2(data,D_base,A,j,W,C_D,replaced_atoms,unused_sigs)
+    ind = find(W(j,:)); 
+    if length(ind) < 1
+        maxsignals = 1000;
+        perm = randperm(length(unused_sigs));  perm = perm(1:min(maxsignals,end)); 
+        E = sum((data(:,unused_sigs(perm)) - D_base*A*W(:,unused_sigs(perm))).^2);
+        [~,ind] = max(E);     X_I = data(:,unused_sigs(perm(ind)));
+        a = omp(D_base,X_I,D_base'*D_base,5);
+        a = a/norm(D_base*a);       A(:,j) = a;
+        W_j = 0;
+        unused_sigs = unused_sigs([1:perm(ind)-1,perm(ind)+1:end]);
+        replaced_atoms(j) = 1;
+        disp('olamba')
+        return;
+    end
+    A(:,j) = 0;    
+    X_I = data(:,ind);      W_I = W(:,ind);
+    E_k_R = X_I - D_base*A*W_I;
+    Z = E_k_R'*D_base*inv(C_D);    
+    [u,s,v] = svds(Z,1);    %b = s*v;
+    a = C_D\v;          %inv(C_D)*v;
+    a = a/norm(D_base*a);
+%     A(:,j) = a;
+    W_j = a'*D_base'*E_k_R;
+end
+
+function [a,W_j,replaced_atoms,unused_sigs] = Optimize_A3(data,D_base,A,j,W,a1,replaced_atoms,unused_sigs)
+    W_j = W(j,:);
+    if nnz(W_j) < 1
+        maxsignals = 1000;
+        perm = randperm(length(unused_sigs));  perm = perm(1:min(maxsignals,end)); 
+        E = sum((data(:,unused_sigs(perm)) - D_base*A*W(:,unused_sigs(perm))).^2);
+        [~,ind] = max(E);     X_I = data(:,unused_sigs(perm(ind)));
+        a = omp(D_base,X_I,D_base'*D_base,5);
+        a = a/norm(D_base*a);       A(:,j) = a;
+        W_j = 0;
+        unused_sigs = unused_sigs([1:perm(ind)-1,perm(ind)+1:end]);
+        replaced_atoms(j) = 1;
+        return;
+    end
+    A(:,j) = 0;     
+    E_k = data - D_base*A*W; 
+    for i = 1:2
+        a = (D_base'*D_base)\(D_base'*E_k*W_j');
+        a = a/norm(D_base*a);   
+%         a1_ = a1 * 2 * max(abs(a'*D_base'*E_k));   % Rescaling of regularization parameter for W Sparsity
+        W_j = sign(a'*D_base'*E_k).*(abs(a'*D_base'*E_k)>a1/2).*(abs(a'*D_base'*E_k)-a1/2);
+    end    
+end
+
+function [a,W_j,replaced_atoms,unused_sigs] = Optimize_A4(data,D_base,A,j,W,a1,a2,replaced_atoms,unused_sigs)
+    W_j = W(j,:);
+    if nnz(W_j) < 1
+        maxsignals = 1000;
+        perm = randperm(length(unused_sigs));  perm = perm(1:min(maxsignals,end)); 
+        E = sum((data(:,unused_sigs(perm)) - D_base*A*W(:,unused_sigs(perm))).^2);
+        [~,ind] = max(E);     X_I = data(:,unused_sigs(perm(ind)));
+        a = omp(D_base,X_I,D_base'*D_base,5);
+        a = a/norm(D_base*a);       A(:,j) = a;
+        W_j = 0;
+        unused_sigs = unused_sigs([1:perm(ind)-1,perm(ind)+1:end]);
+        replaced_atoms(j) = 1;
+        disp('olamba')
+        return;
+    end
+    A(:,j) = 0;         
+    E_k = data - D_base*A*W; 
+    for i = 1:2
+%         a2_ = a2 * 2 * max(abs(D_base'*E_k*W_j'));   % Rescaling for Sparse Atoms
+        XX = (sign(D_base'*E_k*W_j').*(abs(D_base'*E_k*W_j')>a2/2).*(abs(D_base'*E_k*W_j')-a2/2));
+        if nnz(XX) == 0
+            maxsignals = 1000;
+            perm = randperm(length(unused_sigs));  perm = perm(1:min(maxsignals,end)); 
+            E = sum((data(:,unused_sigs(perm)) - D_base*A*W(:,unused_sigs(perm))).^2);
+            [~,ind] = max(E);     X_I = data(:,unused_sigs(perm(ind)));
+            a = omp(D_base,X_I,D_base'*D_base,5);
+            a = a/norm(D_base*a);       A(:,j) = a;
+            W_j = 0;
+            unused_sigs = unused_sigs([1:perm(ind)-1,perm(ind)+1:end]);
+            replaced_atoms(j) = 1;
+            disp('olamba')
+            return;
+        end
+        a = ((D_base'*D_base)*norm(W_j)^2)\XX; 
+%         if isnan(a)
+%             a;
+%         end
+        a = a/norm(D_base*a);
+%         a1_ = a1 * 2 * max(abs(a'*D_base'*E_k));   % Rescaling of regularization parameter for W Sparsity
+        W_j = sign(a'*D_base'*E_k).*(abs(a'*D_base'*E_k)>a1/2).*(abs(a'*D_base'*E_k)-a1/2);
+%         if isnan(W_j)
+%             W_j;
+%         end
+    end
+end
+
+function [A,cleared_atoms] = cleardict(basedict,A,Gamma,X,baseG,Ik,Tdict,muthresh,unused_sigs,replaced_atoms)
+
+use_thresh = 4;  % at least this number of samples must use the atom to be kept
+
+dictsize = size(A,2);
+
+% compute error in blocks to conserve memory
+err = zeros(1,size(X,2));
+blocks = [1:3000:size(X,2) size(X,2)+1];
+for i = 1:length(blocks)-1
+  err(blocks(i):blocks(i+1)-1) = sum((X(:,blocks(i):blocks(i+1)-1) - dictsep(basedict,A,Gamma(:,blocks(i):blocks(i+1)-1))).^2);
+end
+
+cleared_atoms = 0;
+usecount = sum(abs(Gamma)>1e-7, 2);
+
+for j = 1:dictsize
+  
+  % compute G(:,j)
+  if (numel(baseG)>0)
+    Gj = A'*(baseG*A(:,j));
+  else
+    Gj = dicttsep(basedict,A,dictsep(basedict,Ik,A(:,j)));
+  end
+  Gj(j) = 0;
+  
+  % replace atom
+  if ( (max(Gj.^2)>muthresh^2 || usecount(j)<use_thresh) && ~replaced_atoms(j) )
+    [y,i] = max(err(unused_sigs));    
+    atom = omps(basedict, Ik, X(:,unused_sigs(i)), baseG, Tdict, 'checkdict', 'off');
+    d = dictsep(basedict, Ik, atom);
+    atom = atom./norm(d);
+    A(:,j) = atom;
+    unused_sigs = unused_sigs([1:i-1,i+1:end]);
+    cleared_atoms = cleared_atoms+1;
+  end
+  
+end
+
+end
+
+%% Function to Find # of Recovered Atoms
+function Count = NumAtomRec(D_,D)   % Learnt and Original Dic
+Count = 0;
+% D_ = sign(D_).*D_;             % Making all atom values positive for safety
+% D = sign(D).*D;
+for i = 1:size(D_,2)
+    D_(:,i) = sign(D_(1,i))*D_(:,i);
+end
+
+for i = 1:size(D,2)
+    d = sign(D(1,i))*D(:,i);
+    dist = sum((D_ - repmat(d,1,size(D_,2))).^2);
+    [Value,Ind] = min (dist);
+    Error = 1 - abs(D_(:,Ind)'*d);
+    if Error < 0.01
+        Count = Count + 1;
+    end
+end
+Count = 100*Count/size(D_,2);
+end
