@@ -70,6 +70,7 @@ plot(mean(Count_A1),'r-.','LineWidth',2)
 plot(mean(Count_A2),'m','LineWidth',2)
 plot(mean(Count_S1),'b--','LineWidth',2)
 legend('K-SVD','K-SVDs','A_1','A_2','S_1');
+title(sprintf('Atom Sparsity Level s = %d with SNR = %d dB',K,SnRdB));
 title(['SNR = ' num2str(SnRdB),' dB']);
 hold off
     
