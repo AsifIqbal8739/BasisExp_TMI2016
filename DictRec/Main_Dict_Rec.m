@@ -50,10 +50,8 @@ parfor tr = 1:Trials
          [Count_A2(tr,:)] = Dict_Rec(DictR,Y,'algo-2');
     disp(['S1 Started for Trial #',num2str(tr)]);
          [Count_S1(tr,:)] = S_1(Y,D_base*randn(g,n),Dict,noIt,K,aa);
-%     Count_FIDL(tr) = FIDL(Y1,D_base*randn(g,n),Dict);
 end
 warning('on','MATLAB:nearlySingularMatrix');        % turn off warning about bad-conditioned matrices
-% fprintf('FIDL: %0.2f\n',mean(Count_FIDL));
 %% Recovery 
 toc
 disp(['K-SVD  Ratio: ',num2str(mean(Count_K(:,end)))]);
@@ -71,7 +69,7 @@ plot(mean(Count_A2),'m','LineWidth',2)
 plot(mean(Count_S1),'b--','LineWidth',2)
 legend('K-SVD','K-SVDs','A_1','A_2','S_1');
 title(sprintf('Atom Sparsity Level s = %d with SNR = %d dB',K,SnRdB));
-title(['SNR = ' num2str(SnRdB),' dB']);
+%title(['SNR = ' num2str(SnRdB),' dB']);
 hold off
     
 
